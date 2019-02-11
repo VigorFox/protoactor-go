@@ -100,12 +100,16 @@ func Get(name string, kind string) (*actor.PID, remote.ResponseStatusCode) {
 	}
 }
 
-// Get PIDs of members for the specified kind
+// GetMemberPIDs returns PIDs of members for the specified kind
 func GetMemberPIDs(kind string) actor.PIDSet {
 	pids := actor.PIDSet{}
 	if memberList == nil {
 		return pids
 	}
+
+	memberList.mutex.RLock()
+	defer memberList.mutex.RUnlock()
+
 	for _, value := range memberList.members {
 		for _, memberKind := range value.Kinds {
 			if kind == memberKind {

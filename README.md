@@ -101,7 +101,7 @@ Windows users can use Cygwin to run make: [www.cygwin.com](https://www.cygwin.co
 This command exectutes all tests in the repository except for consul integration tests (you need consul for running those tests). We also skip directories that don't contain any tests.
 
 ```
-go test `go list ./... | grep -v consul` | grep 'no test files'
+go test `go list ./... | grep -v consul` | grep -v 'no test files'
 ```
 
 If everything is ok, you will get the output:
@@ -300,7 +300,8 @@ func (state *MyActor) Receive(context actor.Context) {
 func main() {
     remote.Start("localhost:8090")
 
-    pid := actor.SpawnTemplate(&MyActor{})
+    props := actor.FromProducer(func() actor.Actor { return &MyActor{} })
+    pid := actor.Spawn(props)
     message := &messages.Echo{Message: "hej", Sender: pid}
 
     //this is the remote actor we want to communicate with
@@ -330,8 +331,9 @@ func (*MyActor) Receive(context actor.Context) {
 func main() {
     remote.Start("localhost:8091")
 
-    //register a name for our local actor so that it can be discovered remotely
-    remote.Register("hello", actor.FromProducer(func() actor.Actor { return &MyActor{} }))
+    //spawn a named actor "myactor" so it can be discovered remotely
+    props := actor.FromProducer(func() actor.Actor { return &MyActor{} })
+    actor.SpawnNamed(props, "myactor")
     console.ReadLine()
 }
 ```
