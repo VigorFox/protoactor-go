@@ -30,6 +30,7 @@ type ProtoService struct {
 
 // ProtoMethod represents a parsed method in a proto service
 type ProtoMethod struct {
+	Index        int
 	Name         string
 	PascalName   string
 	InputStream  bool
@@ -38,7 +39,7 @@ type ProtoMethod struct {
 	Output       *ProtoMessage
 }
 
-//ProtoAst transforms a FileDescriptor to an AST that can be used for code generation
+// ProtoAst transforms a FileDescriptor to an AST that can be used for code generation
 func ProtoAst(file *google_protobuf.FileDescriptorProto) *ProtoFile {
 
 	pkg := &ProtoFile{}
@@ -59,8 +60,9 @@ func ProtoAst(file *google_protobuf.FileDescriptorProto) *ProtoFile {
 		s.PascalName = MakeFirstLowerCase(s.Name)
 		pkg.Services = append(pkg.Services, s)
 
-		for _, method := range service.GetMethod() {
+		for i, method := range service.GetMethod() {
 			m := &ProtoMethod{}
+			m.Index = i
 			m.Name = method.GetName()
 			m.PascalName = MakeFirstLowerCase(m.Name)
 			//		m.InputStream = *method.ClientStreaming

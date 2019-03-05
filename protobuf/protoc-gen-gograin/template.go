@@ -21,6 +21,8 @@ var _ = math.Inf
 {{ range $service := .Services}}	
 var x{{ $service.Name }}Factory func() {{ $service.Name }}
 
+var rootContext = actor.EmptyRootContext
+
 func {{ $service.Name }}Factory(factory func() {{ $service.Name }}) {
 	x{{ $service.Name }}Factory = factory
 }
@@ -54,8 +56,8 @@ func (g *{{ $service.Name }}Grain) {{ $method.Name }}WithOpts(r *{{ $method.Inpu
 			if err != nil {
 				return nil, err
 			}
-			request := &cluster.GrainRequest{Method: "{{ $method.Name }}", MessageData: bytes}
-			response, err := pid.RequestFuture(request, opts.Timeout).Result()
+			request := &cluster.GrainRequest{MethodIndex: {{ $method.Index }}, MessageData: bytes}
+			response, err := rootContext.RequestFuture(pid, request, opts.Timeout).Result()
 			if err != nil {
 				return nil, err
 			}
@@ -119,15 +121,15 @@ func (a *{{ $service.Name }}Actor) Receive(ctx actor.Context) {
 	case *actor.Started:
 		a.inner = x{{ $service.Name }}Factory()
 		id := ctx.Self().Id
-		a.inner.Init(id[7:]) //skip "remote$"
+		a.inner.Init(id[7:]) // skip "remote$"
 
-	case actor.AutoReceiveMessage: //pass
-	case actor.SystemMessage: //pass
+	case actor.AutoReceiveMessage: // pass
+	case actor.SystemMessage: // pass
 
 	case *cluster.GrainRequest:
-		switch msg.Method {
+		switch msg.MethodIndex {
 		{{ range $method := $service.Methods}}	
-		case "{{ $method.Name }}":
+		case {{ $method.Index }}:
 			req := &{{ $method.Input.Name }}{}
 			err := proto.Unmarshal(msg.MessageData, req)
 			if err != nil {
@@ -155,17 +157,17 @@ func (a *{{ $service.Name }}Actor) Receive(ctx actor.Context) {
 {{ end }}	
 
 
-//Why has this been removed?
-//This should only be done on servers of the below Kinds
-//Clients should not be forced to also be servers
+// Why has this been removed?
+// This should only be done on servers of the below Kinds
+// Clients should not be forced to also be servers
 
-//func init() {
+// func init() {
 //	{{ range $service := .Services}}
-//	remote.Register("{{ $service.Name }}", actor.FromProducer(func() actor.Actor {
+//	remote.Register("{{ $service.Name }}", actor.PropsFromProducer(func() actor.Actor {
 //		return &{{ $service.Name }}Actor {}
 //		})		)
 //	{{ end }}
-//}
+// }
 
 
 {{ range $service := .Services}}
@@ -180,7 +182,7 @@ func (a *{{ $service.Name }}Actor) Receive(ctx actor.Context) {
 {{ end }}
 
 // func init() {
-// 	//apply DI and setup logic
+// 	// apply DI and setup logic
 {{ range $service := .Services}}
 // 	{{ $service.Name }}Factory(func() {{ $service.Name }} { return &{{ $service.PascalName }}{} })
 {{ end }}

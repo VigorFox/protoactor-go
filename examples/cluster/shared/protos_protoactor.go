@@ -19,6 +19,8 @@ var _ = math.Inf
 	
 var xHelloFactory func() Hello
 
+var rootContext = actor.EmptyRootContext
+
 func HelloFactory(factory func() Hello) {
 	xHelloFactory = factory
 }
@@ -56,8 +58,8 @@ func (g *HelloGrain) SayHelloWithOpts(r *HelloRequest, opts *cluster.GrainCallOp
 			if err != nil {
 				return nil, err
 			}
-			request := &cluster.GrainRequest{Method: "SayHello", MessageData: bytes}
-			response, err := pid.RequestFuture(request, opts.Timeout).Result()
+			request := &cluster.GrainRequest{MethodIndex: 0, MessageData: bytes}
+			response, err := rootContext.RequestFuture(pid, request, opts.Timeout).Result()
 			if err != nil {
 				return nil, err
 			}
@@ -125,8 +127,8 @@ func (g *HelloGrain) AddWithOpts(r *AddRequest, opts *cluster.GrainCallOptions) 
 			if err != nil {
 				return nil, err
 			}
-			request := &cluster.GrainRequest{Method: "Add", MessageData: bytes}
-			response, err := pid.RequestFuture(request, opts.Timeout).Result()
+			request := &cluster.GrainRequest{MethodIndex: 1, MessageData: bytes}
+			response, err := rootContext.RequestFuture(pid, request, opts.Timeout).Result()
 			if err != nil {
 				return nil, err
 			}
@@ -194,8 +196,8 @@ func (g *HelloGrain) VoidFuncWithOpts(r *AddRequest, opts *cluster.GrainCallOpti
 			if err != nil {
 				return nil, err
 			}
-			request := &cluster.GrainRequest{Method: "VoidFunc", MessageData: bytes}
-			response, err := pid.RequestFuture(request, opts.Timeout).Result()
+			request := &cluster.GrainRequest{MethodIndex: 2, MessageData: bytes}
+			response, err := rootContext.RequestFuture(pid, request, opts.Timeout).Result()
 			if err != nil {
 				return nil, err
 			}
@@ -259,15 +261,15 @@ func (a *HelloActor) Receive(ctx actor.Context) {
 	case *actor.Started:
 		a.inner = xHelloFactory()
 		id := ctx.Self().Id
-		a.inner.Init(id[7:]) //skip "remote$"
+		a.inner.Init(id[7:]) // skip "remote$"
 
-	case actor.AutoReceiveMessage: //pass
-	case actor.SystemMessage: //pass
+	case actor.AutoReceiveMessage: // pass
+	case actor.SystemMessage: // pass
 
 	case *cluster.GrainRequest:
-		switch msg.Method {
+		switch msg.MethodIndex {
 			
-		case "SayHello":
+		case 0:
 			req := &HelloRequest{}
 			err := proto.Unmarshal(msg.MessageData, req)
 			if err != nil {
@@ -286,7 +288,7 @@ func (a *HelloActor) Receive(ctx actor.Context) {
 				ctx.Respond(resp)
 			}
 			
-		case "Add":
+		case 1:
 			req := &AddRequest{}
 			err := proto.Unmarshal(msg.MessageData, req)
 			if err != nil {
@@ -305,7 +307,7 @@ func (a *HelloActor) Receive(ctx actor.Context) {
 				ctx.Respond(resp)
 			}
 			
-		case "VoidFunc":
+		case 2:
 			req := &AddRequest{}
 			err := proto.Unmarshal(msg.MessageData, req)
 			if err != nil {
@@ -333,17 +335,17 @@ func (a *HelloActor) Receive(ctx actor.Context) {
 	
 
 
-//Why has this been removed?
-//This should only be done on servers of the below Kinds
-//Clients should not be forced to also be servers
+// Why has this been removed?
+// This should only be done on servers of the below Kinds
+// Clients should not be forced to also be servers
 
-//func init() {
+// func init() {
 //	
-//	remote.Register("Hello", actor.FromProducer(func() actor.Actor {
+//	remote.Register("Hello", actor.PropsFromProducer(func() actor.Actor {
 //		return &HelloActor {}
 //		})		)
 //	
-//}
+// }
 
 
 
@@ -366,7 +368,7 @@ func (a *HelloActor) Receive(ctx actor.Context) {
 
 
 // func init() {
-// 	//apply DI and setup logic
+// 	// apply DI and setup logic
 
 // 	HelloFactory(func() Hello { return &hello{} })
 
