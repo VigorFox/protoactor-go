@@ -319,7 +319,7 @@ func (ctx *actorContext) Receive(envelope *MessageEnvelope) {
 
 func (ctx *actorContext) defaultReceive() {
 	if _, ok := ctx.Message().(*PoisonPill); ok {
-		ctx.self.Stop()
+		ctx.Stop(ctx.self)
 		return
 	}
 
@@ -357,7 +357,14 @@ func (ctx *actorContext) SpawnNamed(props *Props, name string) (*PID, error) {
 		panic(errors.New("Props used to spawn child cannot have GuardianStrategy"))
 	}
 
-	pid, err := props.spawn(ctx.self.Id+"/"+name, ctx.self)
+	var pid *PID
+	var err error
+	if ctx.props.spawnMiddlewareChain != nil {
+		pid, err = ctx.props.spawnMiddlewareChain(ctx.self.Id+"/"+name, props, ctx)
+	} else {
+		pid, err = props.spawn(ctx.self.Id+"/"+name, ctx)
+	}
+
 	if err != nil {
 		return pid, err
 	}
@@ -365,6 +372,40 @@ func (ctx *actorContext) SpawnNamed(props *Props, name string) (*PID, error) {
 	ctx.ensureExtras().addChild(pid)
 
 	return pid, nil
+}
+
+//
+// Interface: stopper
+//
+
+// Stop will stop actor immediately regardless of existing user messages in mailbox.
+func (ctx *actorContext) Stop(pid *PID) {
+	pid.ref().Stop(pid)
+}
+
+// StopFuture will stop actor immediately regardless of existing user messages in mailbox, and return its future.
+func (ctx *actorContext) StopFuture(pid *PID) *Future {
+	future := NewFuture(10 * time.Second)
+
+	pid.sendSystemMessage(&Watch{Watcher: future.pid})
+	ctx.Stop(pid)
+
+	return future
+}
+
+// Poison will tell actor to stop after processing current user messages in mailbox.
+func (ctx *actorContext) Poison(pid *PID) {
+	pid.sendUserMessage(&PoisonPill{})
+}
+
+// PoisonFuture will tell actor to stop after processing current user messages in mailbox, and return its future.
+func (ctx *actorContext) PoisonFuture(pid *PID) *Future {
+	future := NewFuture(10 * time.Second)
+
+	pid.sendSystemMessage(&Watch{Watcher: future.pid})
+	ctx.Poison(pid)
+
+	return future
 }
 
 //
@@ -505,7 +546,7 @@ func (ctx *actorContext) stopAllChildren() {
 		return
 	}
 	ctx.extras.children.ForEach(func(_ int, pid PID) {
-		pid.Stop()
+		ctx.Stop(&pid)
 	})
 }
 
