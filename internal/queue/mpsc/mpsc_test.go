@@ -29,9 +29,41 @@ func TestQueue_Empty(t *testing.T) {
 	assert.False(t, q.Empty())
 }
 
+func TestQueue_PushPopOneProducer(t *testing.T) {
+	expCount := 100
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	q := New()
+	go func() {
+		i := 0
+		for {
+			r := q.Pop()
+			if r == nil {
+				runtime.Gosched()
+				continue
+			}
+			i++
+			if i == expCount {
+				wg.Done()
+				return
+			}
+		}
+	}()
+
+	var val interface{} = "foo"
+
+	for i := 0; i < expCount; i++ {
+		q.Push(val)
+	}
+
+	wg.Wait()
+}
+
 func TestMpscQueueConsistency(t *testing.T) {
 	max := 1000000
-	c := 100
+	c := runtime.NumCPU() / 2
+	cmax := max / c
 	var wg sync.WaitGroup
 	wg.Add(1)
 	q := New()
@@ -53,7 +85,7 @@ func TestMpscQueueConsistency(t *testing.T) {
 				t.FailNow()
 			}
 			seen[s] = s
-			if i == max {
+			if i == cmax*c {
 				wg.Done()
 				return
 			}
@@ -62,7 +94,6 @@ func TestMpscQueueConsistency(t *testing.T) {
 
 	for j := 0; j < c; j++ {
 		jj := j
-		cmax := max / c
 		go func() {
 			for i := 0; i < cmax; i++ {
 				if rand.Intn(10) == 0 {
@@ -82,5 +113,66 @@ func TestMpscQueueConsistency(t *testing.T) {
 			log.Printf("unexpected result %+v", r)
 			t.FailNow()
 		}
+	}
+}
+
+func benchmarkPushPop(count, c int) {
+	var wg sync.WaitGroup
+	wg.Add(1)
+	q := New()
+	go func() {
+		i := 0
+		for {
+			r := q.Pop()
+			if r == nil {
+				runtime.Gosched()
+				continue
+			}
+			i++
+			if i == count {
+				wg.Done()
+				return
+			}
+		}
+	}()
+
+	var val interface{} = "foo"
+
+	for i := 0; i < c; i++ {
+		go func(n int) {
+			for n > 0 {
+				q.Push(val)
+				n--
+			}
+		}(count / c)
+	}
+
+	wg.Wait()
+}
+
+func BenchmarkPushPop(b *testing.B) {
+	benchmarks := []struct {
+		count       int
+		concurrency int
+	}{
+		{
+			count:       10000,
+			concurrency: 1,
+		},
+		{
+			count:       10000,
+			concurrency: 2,
+		},
+		{
+			count:       10000,
+			concurrency: 4,
+		},
+	}
+	for _, bm := range benchmarks {
+		b.Run(fmt.Sprintf("%d_%d", bm.count, bm.concurrency), func(b *testing.B) {
+			for i := 0; i < b.N; i++ {
+				benchmarkPushPop(bm.count, bm.concurrency)
+			}
+		})
 	}
 }
