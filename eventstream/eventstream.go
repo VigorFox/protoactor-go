@@ -21,6 +21,10 @@ func Publish(event interface{}) {
 	es.Publish(event)
 }
 
+func PublishUnsafe(evt interface{}) {
+	es.PublishUnsafe(evt)
+}
+
 type EventStream struct {
 	sync.RWMutex
 	subscriptions []*Subscription
@@ -28,13 +32,14 @@ type EventStream struct {
 
 func (es *EventStream) Subscribe(fn func(evt interface{})) *Subscription {
 	es.Lock()
+	defer es.Unlock()
+
 	sub := &Subscription{
 		es: es,
 		i:  len(es.subscriptions),
 		fn: fn,
 	}
 	es.subscriptions = append(es.subscriptions, sub)
-	es.Unlock()
 	return sub
 }
 
@@ -44,8 +49,15 @@ func (es *EventStream) Unsubscribe(sub *Subscription) {
 	}
 
 	es.Lock()
+	defer es.Unlock()
 	i := sub.i
 	l := len(es.subscriptions) - 1
+
+	if l == -1 {
+		es.subscriptions = nil
+		sub.i = -1
+		return
+	}
 
 	es.subscriptions[i] = es.subscriptions[l]
 	es.subscriptions[i].i = i
@@ -57,14 +69,16 @@ func (es *EventStream) Unsubscribe(sub *Subscription) {
 	if len(es.subscriptions) == 0 {
 		es.subscriptions = nil
 	}
-
-	es.Unlock()
 }
 
 func (es *EventStream) Publish(evt interface{}) {
 	es.RLock()
 	defer es.RUnlock()
 
+	es.PublishUnsafe(evt)
+}
+
+func (es *EventStream) PublishUnsafe(evt interface{}) {
 	for _, s := range es.subscriptions {
 		if s.p == nil || s.p(evt) {
 			s.fn(evt)
@@ -85,7 +99,8 @@ type Subscription struct {
 // WithPredicate sets a predicate to filter messages passed to the subscriber
 func (s *Subscription) WithPredicate(p Predicate) *Subscription {
 	s.es.Lock()
+	defer s.es.Unlock()
+
 	s.p = p
-	s.es.Unlock()
 	return s
 }

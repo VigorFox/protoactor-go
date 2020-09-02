@@ -38,15 +38,24 @@ This is six times more the new super advanced UDP based Artery transport for Sca
 
 ```text
 :> node1.exe
-2016/12/02 14:30:09 50000
-2016/12/02 14:30:09 100000
-2016/12/02 14:30:09 150000
+Started EndpointManager
+Started Activator
+Starting Proto.Actor server address="127.0.0.1:8081"
+Started EndpointWatcher address="127.0.0.1:8080"
+Started EndpointWriter address="127.0.0.1:8080"
+EndpointWriter connecting address="127.0.0.1:8080"
+EndpointWriter connected address="127.0.0.1:8080"
+2020/06/22 10:45:20 Starting to send
+2020/06/22 10:45:20 50000
+2020/06/22 10:45:20 100000
+2020/06/22 10:45:20 150000
 ... snip ...
-2016/12/02 14:30:09 900000
-2016/12/02 14:30:09 950000
-2016/12/02 14:30:10 1000000
-2016/12/02 14:30:10 Elapsed 999.9985ms
-2016/12/02 14:30:10 Msg per sec 2000003 <--
+2020/06/22 10:45:21 900000
+2020/06/22 10:45:21 950000
+2020/06/22 10:45:21 1000000
+2020/06/22 10:45:21 Elapsed 732.9921ms
+2020/06/22 10:45:21 Msg per sec 2728542 <--
+
 ```
 
 ## History
@@ -175,8 +184,8 @@ func main() {
     if err != nil {
         panic(err)
     }
-    context.Send(Hello{Who: "Roger"})
-    context.Send(Hello{Who: "Roger"})
+    context.Send(pid, Hello{Who: "Roger"})
+    context.Send(pid, Hello{Who: "Roger"})
     console.ReadLine()
 }
 ```
@@ -379,6 +388,14 @@ message Response {
 Notice: always use "gogoslick_out" instead of "go_out" when generating proto code. "gogoslick_out" will create type names which will be used during serialization.
 
 For more examples, see the example folder in this repository.
+
+## Contributors 
+
+<a href="https://github.com/AsynkronIT/protoactor-go/graphs/contributors">
+  <img src="https://contributors-img.web.app/image?repo=AsynkronIT/protoactor-go" />
+</a>
+
+Made with [contributors-img](https://contributors-img.web.app).
 
 ### Support
 
