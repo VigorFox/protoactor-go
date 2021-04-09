@@ -1,28 +1,37 @@
 package main
 
 import (
+	"cluster-broadcast/shared"
 	"fmt"
-	"github.com/AsynkronIT/goconsole"
+	"time"
+
+	console "github.com/AsynkronIT/goconsole"
 	"github.com/AsynkronIT/protoactor-go/actor"
 	"github.com/AsynkronIT/protoactor-go/cluster"
-	"github.com/AsynkronIT/protoactor-go/cluster/consul"
-	"github.com/AsynkronIT/protoactor-go/examples/cluster-broadcast/shared"
+	"github.com/AsynkronIT/protoactor-go/cluster/automanaged"
 	"github.com/AsynkronIT/protoactor-go/remote"
-	"log"
-	"time"
 )
 
-func main () {
-	startNode(8081)
+func main() {
+	cluster := startNode(8081)
 
 	fmt.Print("\nBoot other nodes and press Enter\n")
 	console.ReadLine()
 
+	fmt.Print("\nAdding 1 Egg - Enter\n")
+	console.ReadLine()
 	calcAdd("Eggs", 1)
+
+	fmt.Print("\nAdding 10 Egg - Enter\n")
+	console.ReadLine()
 	calcAdd("Eggs", 10)
 
-	calcAdd("Bananas", 1000)
+	fmt.Print("\nAdding 100 Bananas - Enter\n")
+	console.ReadLine()
+	calcAdd("Bananas", 100)
 
+	fmt.Print("\nAdding 2 Meat - Enter\n")
+	console.ReadLine()
 	calcAdd("Meat", 3)
 	calcAdd("Meat", 9000)
 
@@ -33,23 +42,30 @@ func main () {
 	cluster.Shutdown(true)
 }
 
-func startNode(port int64)  {
+func startNode(port int64) *cluster.Cluster {
 	// how long before the grain poisons itself
 	timeout := 10 * time.Minute
 
-	// this node knows about Hello kind
-	remote.Register("Calculator", actor.PropsFromProducer(func() actor.Actor {
+	system := actor.NewActorSystem()
+	shared.SetSystem(system)
+
+	calcKind := cluster.NewKind("Calculator", actor.PropsFromProducer(func() actor.Actor {
 		return &shared.CalculatorActor{
 			Timeout: &timeout,
 		}
 	}))
-
-	// this node knows about Hello kind
-	remote.Register("Tracker", actor.PropsFromProducer(func() actor.Actor {
+	trackerKind := cluster.NewKind("Tracker", actor.PropsFromProducer(func() actor.Actor {
 		return &shared.TrackerActor{
 			Timeout: &timeout,
 		}
 	}))
+
+	provider := automanaged.NewWithConfig(2*time.Second, 6330, "localhost:6330", "localhost:6331")
+	config := remote.Configure("localhost", 0)
+
+	clusterConfig := cluster.Configure("my-cluster", provider, config, calcKind, trackerKind)
+	cluster := cluster.New(system, clusterConfig)
+	shared.SetCluster(cluster)
 
 	shared.CalculatorFactory(func() shared.Calculator {
 		return &shared.CalcGrain{}
@@ -59,16 +75,13 @@ func startNode(port int64)  {
 		return &shared.TrackGrain{}
 	})
 
-	cp, err := consul.New()
-	if err != nil {
-		log.Fatal(err)
-	}
-	cluster.Start("mycluster", fmt.Sprintf("127.0.0.1:%v", port), cp)
+	cluster.Start()
+	return cluster
 }
 
-func calcAdd(grainId string, addNumber int64)  {
+func calcAdd(grainId string, addNumber int64) {
 	calcGrain := shared.GetCalculatorGrain(grainId)
-	total1, err := calcGrain.Add(&shared.NumberRequest{ Number: addNumber})
+	total1, err := calcGrain.Add(&shared.NumberRequest{Number: addNumber})
 	if err != nil {
 		panic(err)
 	}
@@ -76,7 +89,7 @@ func calcAdd(grainId string, addNumber int64)  {
 	fmt.Printf("Grain: %v - Total: %v \n", calcGrain.ID, total1.Number)
 }
 
-func getAll()  {
+func getAll() {
 	trackerGrain := shared.GetTrackerGrain("singleTrackerGrain")
 	totals, err := trackerGrain.BroadcastGetCounts(&shared.Noop{})
 	if err != nil {

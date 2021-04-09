@@ -17,6 +17,8 @@ test cases
 
 const ActorName = "demo.actor"
 
+var system = actor.NewActorSystem()
+
 type dataStore struct {
 	providerState ProviderState
 }
@@ -127,7 +129,7 @@ func TestRecovery(t *testing.T) {
 
 	for i, tc := range cases {
 		t.Run(fmt.Sprintf("case-%d", i), func(t *testing.T) {
-			rootContext := actor.EmptyRootContext
+			rootContext := system.Root
 			props := actor.PropsFromProducer(makeActor).
 				WithReceiverMiddleware(Using(tc.init))
 			pid, err := rootContext.SpawnNamed(props, ActorName)
@@ -147,7 +149,7 @@ func TestRecovery(t *testing.T) {
 			assert.Equal(t, tc.afterMsgs, queryState)
 
 			// wait for shutdown
-			rootContext.PoisonFuture(pid).Wait()
+			_ = rootContext.PoisonFuture(pid).Wait()
 
 			pid, err = rootContext.SpawnNamed(props, ActorName)
 			require.NoError(t, err)
@@ -161,7 +163,7 @@ func TestRecovery(t *testing.T) {
 			assert.Equal(t, tc.afterMsgs, queryState)
 
 			// shutdown at end of test for cleanup
-			rootContext.PoisonFuture(pid).Wait()
+			_ = rootContext.PoisonFuture(pid).Wait()
 		})
 	}
 }

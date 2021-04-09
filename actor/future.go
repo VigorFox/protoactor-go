@@ -13,12 +13,15 @@ import (
 // ErrTimeout is the error used when a future times out before receiving a result.
 var ErrTimeout = errors.New("future: timeout")
 
-// NewFuture creates and returns a new actor.Future with a timeout of duration d
-func NewFuture(d time.Duration) *Future {
-	ref := &futureProcess{Future{cond: sync.NewCond(&sync.Mutex{})}}
-	id := ProcessRegistry.NextId()
+// ErrDeadLetter is meaning you request to a unreachable PID.
+var ErrDeadLetter = errors.New("future: dead letter")
 
-	pid, ok := ProcessRegistry.Add(ref, "future"+id)
+// NewFuture creates and returns a new actor.Future with a timeout of duration d
+func NewFuture(actorSystem *ActorSystem, d time.Duration) *Future {
+	ref := &futureProcess{Future{actorSystem: actorSystem, cond: sync.NewCond(&sync.Mutex{})}}
+	id := actorSystem.ProcessRegistry.NextId()
+
+	pid, ok := actorSystem.ProcessRegistry.Add(ref, "future"+id)
 	if !ok {
 		plog.Error("failed to register future process", log.Stringer("pid", pid))
 	}
@@ -42,8 +45,9 @@ func NewFuture(d time.Duration) *Future {
 }
 
 type Future struct {
-	pid  *PID
-	cond *sync.Cond
+	actorSystem *ActorSystem
+	pid         *PID
+	cond        *sync.Cond
 	// protected by cond
 	done        bool
 	result      interface{}
@@ -81,7 +85,7 @@ func (f *Future) sendToPipes() {
 		m = f.result
 	}
 	for _, pid := range f.pipes {
-		pid.sendUserMessage(m)
+		pid.sendUserMessage(f.actorSystem, m)
 	}
 	f.pipes = nil
 }
@@ -122,7 +126,12 @@ type futureProcess struct {
 
 func (ref *futureProcess) SendUserMessage(pid *PID, message interface{}) {
 	_, msg, _ := UnwrapEnvelope(message)
-	ref.result = msg
+	if _, ok := msg.(*DeadLetterResponse); ok {
+		ref.result = nil
+		ref.err = ErrDeadLetter
+	} else {
+		ref.result = msg
+	}
 	ref.Stop(pid)
 }
 
@@ -143,7 +152,7 @@ func (ref *futureProcess) Stop(pid *PID) {
 	if tp != nil {
 		tp.Stop()
 	}
-	ProcessRegistry.Remove(pid)
+	ref.actorSystem.ProcessRegistry.Remove(pid)
 
 	ref.sendToPipes()
 	ref.runCompletions()

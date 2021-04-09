@@ -1,55 +1,93 @@
 package consul
 
 import (
-	"log"
+	"fmt"
+	"net"
 	"strconv"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/AsynkronIT/protoactor-go/actor"
 	"github.com/AsynkronIT/protoactor-go/cluster"
-	"github.com/AsynkronIT/protoactor-go/eventstream"
+	"github.com/AsynkronIT/protoactor-go/remote"
+	"github.com/stretchr/testify/assert"
 )
 
-func TestRegisterMember(t *testing.T) {
-	if testing.Short() {
-		return
-	}
-
-	p, _ := New()
-	defer p.Shutdown()
-	err := p.RegisterMember("mycluster", "127.0.0.1", 8000, []string{"a", "b"}, &TestMemberStatusValue{value: 0}, &TestMemberStatusValueSerializer{})
+func newClusterForTest(name string, addr string, cp cluster.ClusterProvider) *cluster.Cluster {
+	host, _port, err := net.SplitHostPort(addr)
 	if err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
+	port, _ := strconv.Atoi(_port)
+	remoteConfig := remote.Configure(host, port)
+	config := cluster.Configure(name, cp, remoteConfig)
+	// return cluster.NewForTest(system, config)
+
+	system := actor.NewActorSystem()
+	c := cluster.New(system, config)
+
+	// use for test without start remote
+	c.ActorSystem.ProcessRegistry.Address = addr
+	c.MemberList = cluster.NewMemberList(c)
+	return c
 }
 
-func TestRefreshMemberTTL(t *testing.T) {
+func TestStartMember(t *testing.T) {
 	if testing.Short() {
 		return
 	}
+	assert := assert.New(t)
 
 	p, _ := New()
-	defer p.Shutdown()
-	err := p.RegisterMember("mycluster", "127.0.0.1", 8000, []string{"a", "b"}, &TestMemberStatusValue{value: 0}, &TestMemberStatusValueSerializer{})
-	if err != nil {
-		log.Fatal(err)
-	}
-	p.MonitorMemberStatusChanges()
+	defer p.Shutdown(true)
+
+	c := newClusterForTest("mycluster", "127.0.0.1:8000", p)
+	eventstream := c.ActorSystem.EventStream
+	ch := make(chan interface{}, 16)
 	eventstream.Subscribe(func(m interface{}) {
-		log.Printf("Event %+v", m)
+		if _, ok := m.(*cluster.ClusterTopologyEventV2); ok {
+			ch <- m
+		}
 	})
-	time.Sleep(20 * time.Second)
+
+	err := p.StartMember(c)
+	assert.NoError(err)
+
+	select {
+	case <-time.After(10 * time.Second):
+		assert.FailNow("no member joined yet")
+
+	case m := <-ch:
+		msg := m.(*cluster.ClusterTopologyEventV2)
+		// member joined
+		members := []*cluster.Member{
+			{
+				Id:    "mycluster@127.0.0.1:8000",
+				Host:  "127.0.0.1",
+				Port:  8000,
+				Kinds: []string{},
+			},
+		}
+
+		expected := &cluster.ClusterTopology{
+			Members: members,
+			Joined:  members,
+			EventId: msg.ClusterTopology.EventId,
+		}
+		assert.Equal(expected, msg.ClusterTopology)
+	}
 }
 
 func TestRegisterMultipleMembers(t *testing.T) {
 	if testing.Short() {
 		return
 	}
+	assert := assert.New(t)
 
 	members := []struct {
 		cluster string
-		address string
+		host    string
 		port    int
 	}{
 		{"mycluster2", "127.0.0.1", 8001},
@@ -58,19 +96,21 @@ func TestRegisterMultipleMembers(t *testing.T) {
 	}
 
 	p, _ := New()
-	defer p.Shutdown()
-
+	defer p.Shutdown(true)
 	for _, member := range members {
-		err := p.RegisterMember(member.cluster, member.address, member.port, []string{"a", "b"}, nil, &cluster.NilMemberStatusValueSerializer{})
-		if err != nil {
-			log.Fatal(err)
-		}
+		addr := fmt.Sprintf("%s:%d", member.host, member.port)
+		_p, _ := New()
+		c := newClusterForTest(member.cluster, addr, _p)
+		err := p.StartMember(c)
+		assert.NoError(err)
+		t.Cleanup(func() {
+			_p.Shutdown(true)
+		})
 	}
 
 	entries, _, err := p.client.Health().Service("mycluster2", "", true, nil)
-	if err != nil {
-		log.Fatal(err)
-	}
+	assert.NoError(err)
+
 	found := false
 	for _, entry := range entries {
 		found = false
@@ -79,119 +119,69 @@ func TestRegisterMultipleMembers(t *testing.T) {
 				found = true
 			}
 		}
-		if !found {
-			t.Errorf("Member port not found - ID:%v Address: %v:%v \n", entry.Service.ID, entry.Service.Address, entry.Service.Port)
-		}
+		assert.Truef(found, "Member port not found - ID:%v Address: %v:%v",
+			entry.Service.ID, entry.Service.Address, entry.Service.Port)
 	}
 }
 
-func TestUpdateMemberStatusValue(t *testing.T) {
+func TestUpdateMemberState(t *testing.T) {
 	if testing.Short() {
 		return
 	}
+	assert := assert.New(t)
 
 	p, _ := New()
-	defer p.Shutdown()
+	defer p.Shutdown(true)
 
-	err := p.RegisterMember("mycluster3", "127.0.0.1", 8001, []string{"a", "b"}, &TestMemberStatusValue{value: 0}, &TestMemberStatusValueSerializer{})
-	if err != nil {
-		log.Fatal(err)
-	}
+	c := newClusterForTest("mycluster3", "127.0.0.1:8000", p)
+	err := p.StartMember(c)
+	assert.NoError(err)
 
-	newStatusValue := &TestMemberStatusValue{value: 3}
-	err = p.UpdateMemberStatusValue(newStatusValue)
-	if err != nil {
-		t.Error(err)
-	}
-
-	entries, _, err := p.client.Health().Service("mycluster3", "", true, nil)
-	if err != nil {
-		log.Fatal(err)
-	}
-	found := false
-	for _, entry := range entries {
-		sv := p.statusValueSerializer.Deserialize(entry.Service.Meta["StatusValue"])
-		if sv.IsSame(newStatusValue) {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("Member status value not found")
-	}
+	state := cluster.ClusterState{[]string{"yes"}}
+	err = p.UpdateClusterState(state)
+	assert.NoError(err)
 }
 
-type TestMemberStatusValue struct{ value int }
-
-func (v *TestMemberStatusValue) IsSame(val cluster.MemberStatusValue) bool {
-	if val == nil {
-		return false
-	}
-	if sv, ok := val.(*TestMemberStatusValue); ok {
-		return sv.value == v.value
-	}
-	return false
-}
-
-type TestMemberStatusValueSerializer struct{}
-
-func (s *TestMemberStatusValueSerializer) Serialize(val cluster.MemberStatusValue) string {
-	dVal, _ := val.(*TestMemberStatusValue)
-	return strconv.Itoa(dVal.value)
-}
-
-func (s *TestMemberStatusValueSerializer) Deserialize(val string) cluster.MemberStatusValue {
-	weight, _ := strconv.Atoi(val)
-	return &TestMemberStatusValue{value: weight}
-}
-
-func TestUpdateMemberStatusValueDoesNotReregisterAfterShutdown(t *testing.T) {
+func TestUpdateMemberState_DoesNotReregisterAfterShutdown(t *testing.T) {
 	if testing.Short() {
 		return
 	}
+	assert := assert.New(t)
 
 	p, _ := New()
+	c := newClusterForTest("mycluster4", "127.0.0.1:8001", p)
+	err := p.StartMember(c)
+	assert.NoError(err)
+	t.Cleanup(func() {
+		p.Shutdown(true)
+	})
 
-	clusterName := "mycluster4"
-	port := 8001
+	found, _ := findService(t, p)
+	assert.True(found, "service was not registered in consul")
 
-	err := p.RegisterMember(clusterName, "127.0.0.1", port, []string{"a", "b"}, &TestMemberStatusValue{value: 0}, &TestMemberStatusValueSerializer{})
-	if err != nil {
-		t.Error(err)
-	}
+	state := cluster.ClusterState{[]string{"yes"}}
+	err = p.UpdateClusterState(state)
+	assert.NoError(err)
 
-	found, _ := findService(t, p, clusterName, port)
+	err = p.Shutdown(true)
+	assert.NoError(err)
 
-	if !found {
-		log.Fatal("service was not registered in consul")
-	}
+	err = p.UpdateClusterState(state)
+	assert.Equal(ProviderShuttingDownError, err)
 
-	err = p.Shutdown()
-	if err != nil {
-		t.Error(err)
-	}
-
-	newStatusValue := &TestMemberStatusValue{value: 3}
-	err = p.UpdateMemberStatusValue(newStatusValue)
-	if err == nil {
-		log.Fatal("Expected error since service should not re-register after shutdown was initialized")
-	} else if err != ProviderShuttingDownError {
-		t.Error(err)
-	}
-
-	found, status := findService(t, p, clusterName, port)
-
-	if found {
-		log.Fatalf("service was re-registered in consul after shutdown (status: %s)", status)
-	}
+	found, status := findService(t, p)
+	assert.Falsef(found, "service was re-registered in consul after shutdown (status: %s)", status)
 }
 
-func TestUpdateTTLDoesNotReregisterAfterShutdown(t *testing.T) {
+func TestUpdateTTL_DoesNotReregisterAfterShutdown(t *testing.T) {
 	if testing.Short() {
 		return
 	}
+	assert := assert.New(t)
 
-	clusterName := "mycluster5"
-	port := 8001
+	p, _ := New()
+	c := newClusterForTest("mycluster5", "127.0.0.1:8001", p)
+	port := c.Config.RemoteConfig.Port
 
 	originalBlockingUpdateTTLFunc := blockingUpdateTTLFunc
 	defer func() {
@@ -203,12 +193,13 @@ func TestUpdateTTLDoesNotReregisterAfterShutdown(t *testing.T) {
 	var blockingUpdateTTLBlockReachedWg sync.WaitGroup
 	blockingUpdateTTLBlockReachedWg.Add(1)
 
-	var rw sync.RWMutex
-	shutdownShouldHaveResolved := false
+	// shutdownShouldHaveResolved := false
+
+	shutdownShouldHaveResolved := make(chan bool, 1)
 
 	// this simulates `blockingUpdateTTL` in `UpdateTTL` to be slower than `Shutdown`
-	blockingUpdateTTLFunc = func(p *ConsulProvider) error {
-		// default behaviour until `RegisterMember` was called
+	blockingUpdateTTLFunc = func(p *Provider) error {
+		// default behaviour until `StartMember` was called
 		if !registeredInConsul || p.port != port {
 			return originalBlockingUpdateTTLFunc(p)
 		}
@@ -216,31 +207,16 @@ func TestUpdateTTLDoesNotReregisterAfterShutdown(t *testing.T) {
 		blockingUpdateTTLBlockReachedWg.Done()
 
 		// wait until it is safe to assume that `Shutdown` will not finish until this call resolves or that `Shutdown` is already done
-		for {
-			rw.RLock()
-			if shutdownShouldHaveResolved {
-				rw.RUnlock()
-				break
-			}
-			rw.RUnlock()
-			time.Sleep(10 * time.Millisecond)
-		}
+		<-shutdownShouldHaveResolved
 		return originalBlockingUpdateTTLFunc(p)
 	}
 
-	p, _ := New()
-
-	err := p.RegisterMember(clusterName, "127.0.0.1", port, []string{"a", "b"}, &TestMemberStatusValue{value: 0}, &TestMemberStatusValueSerializer{})
-	if err != nil {
-		t.Error(err)
-	}
+	err := p.StartMember(c)
+	assert.NoError(err)
 	registeredInConsul = true
 
-	found, _ := findService(t, p, clusterName, port)
-
-	if !found {
-		log.Fatal("service was not registered in consul")
-	}
+	found, _ := findService(t, p)
+	assert.True(found, "service was not registered in consul")
 
 	// Wait until `blockingUpdateTTL` waits for the deregistration/shutdown of the member
 	blockingUpdateTTLBlockReachedWg.Wait()
@@ -248,29 +224,22 @@ func TestUpdateTTLDoesNotReregisterAfterShutdown(t *testing.T) {
 	go func() {
 		// if after 5 seconds `Shutdown` did not resolve, assume that it will not resolve until `blockingUpdateTTL` resolves
 		time.Sleep(5 * time.Second)
-		rw.Lock()
-		shutdownShouldHaveResolved = true
-		rw.Unlock()
+		shutdownShouldHaveResolved <- true
 	}()
 
-	err = p.Shutdown()
-	if err != nil {
-		t.Error(err)
-	}
-	rw.Lock()
-	shutdownShouldHaveResolved = true
-	rw.Unlock()
+	err = p.Shutdown(true)
+	assert.NoError(err)
+	shutdownShouldHaveResolved <- true
 
 	// since `UpdateTTL` runs in a separate goroutine we need to wait until it is actually finished before checking the member's clusterstatus
 	p.updateTTLWaitGroup.Wait()
-
-	found, status := findService(t, p, clusterName, port)
-	if found {
-		t.Fatalf("service was still registered in consul after shutdown (service status: %s)", status)
-	}
+	found, status := findService(t, p)
+	assert.Falsef(found, "service was still registered in consul after shutdown (service status: %s)", status)
 }
 
-func findService(t *testing.T, p *ConsulProvider, service string, port int) (found bool, status string) {
+func findService(t *testing.T, p *Provider) (found bool, status string) {
+	service := p.cluster.Config.Name
+	port := p.cluster.Config.RemoteConfig.Port
 	entries, _, err := p.client.Health().Service(service, "", false, nil)
 	if err != nil {
 		t.Error(err)

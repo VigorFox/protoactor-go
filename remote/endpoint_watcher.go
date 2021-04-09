@@ -5,11 +5,12 @@ import (
 	"github.com/AsynkronIT/protoactor-go/log"
 )
 
-func newEndpointWatcher(address string) actor.Producer {
+func newEndpointWatcher(remote *Remote, address string) actor.Producer {
 	return func() actor.Actor {
 		watcher := &endpointWatcher{
 			behavior: actor.NewBehavior(),
 			address:  address,
+			remote:   remote,
 		}
 		watcher.behavior.Become(watcher.connected)
 		return watcher
@@ -20,6 +21,7 @@ type endpointWatcher struct {
 	behavior actor.Behavior
 	address  string
 	watched  map[string]*actor.PIDSet // key is the watching PID string, value is the watched PID
+	remote   *Remote
 }
 
 func (state *endpointWatcher) initialize() {
@@ -49,27 +51,28 @@ func (state *endpointWatcher) connected(ctx actor.Context) {
 			Who:               msg.Watchee,
 			AddressTerminated: false,
 		}
-		ref, ok := actor.ProcessRegistry.GetLocal(msg.Watcher.Id)
+		ref, ok := state.remote.actorSystem.ProcessRegistry.GetLocal(msg.Watcher.Id)
 		if ok {
 			ref.SendSystemMessage(msg.Watcher, terminated)
 		}
 	case *EndpointConnectedEvent:
 		// Already connected, pass
 	case *EndpointTerminatedEvent:
-		plog.Info("EndpointWatcher handling terminated", log.String("address", state.address))
+		plog.Info("EndpointWatcher handling terminated",
+			log.String("address", state.address), log.Int("watched", len(state.watched)))
 
 		for id, pidSet := range state.watched {
 			// try to find the watcher ID in the local actor registry
-			ref, ok := actor.ProcessRegistry.GetLocal(id)
+			ref, ok := state.remote.actorSystem.ProcessRegistry.GetLocal(id)
 			if ok {
-				pidSet.ForEach(func(i int, pid actor.PID) {
+				pidSet.ForEach(func(i int, pid *actor.PID) {
 					// create a terminated event for the Watched actor
 					terminated := &actor.Terminated{
-						Who:               &pid,
+						Who:               pid,
 						AddressTerminated: true,
 					}
 
-					watcher := actor.NewLocalPID(id)
+					watcher := state.remote.actorSystem.NewLocalPID(id)
 					// send the address Terminated event to the Watcher
 					ref.SendSystemMessage(watcher, terminated)
 				})
@@ -95,7 +98,7 @@ func (state *endpointWatcher) connected(ctx actor.Context) {
 		}
 
 		// pass it off to the remote PID
-		SendMessage(msg.Watchee, nil, w, nil, -1)
+		state.remote.SendMessage(msg.Watchee, nil, w, nil, -1)
 
 	case *remoteUnwatch:
 		// delete the watch entries
@@ -112,7 +115,7 @@ func (state *endpointWatcher) connected(ctx actor.Context) {
 		}
 
 		// pass it off to the remote PID
-		SendMessage(msg.Watchee, nil, uw, nil, -1)
+		state.remote.SendMessage(msg.Watchee, nil, uw, nil, -1)
 	case actor.SystemMessage, actor.AutoReceiveMessage:
 		// ignore
 	default:
@@ -124,7 +127,7 @@ func (state *endpointWatcher) terminated(ctx actor.Context) {
 	switch msg := ctx.Message().(type) {
 	case *remoteWatch:
 		// try to find the watcher ID in the local actor registry
-		ref, ok := actor.ProcessRegistry.GetLocal(msg.Watcher.Id)
+		ref, ok := state.remote.actorSystem.ProcessRegistry.GetLocal(msg.Watcher.Id)
 		if ok {
 
 			// create a terminated event for the Watched actor

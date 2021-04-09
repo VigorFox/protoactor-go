@@ -1,30 +1,32 @@
 package remote
 
 import (
+	io "io"
 	"time"
 
 	"github.com/AsynkronIT/protoactor-go/actor"
-	"github.com/AsynkronIT/protoactor-go/eventstream"
 	"github.com/AsynkronIT/protoactor-go/log"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 )
 
-func endpointWriterProducer(address string, config *remoteConfig) actor.Producer {
+func endpointWriterProducer(remote *Remote, address string, config *Config) actor.Producer {
 	return func() actor.Actor {
 		return &endpointWriter{
 			address: address,
 			config:  config,
+			remote:  remote,
 		}
 	}
 }
 
 type endpointWriter struct {
-	config              *remoteConfig
+	config              *Config
 	address             string
 	conn                *grpc.ClientConn
 	stream              Remoting_ReceiveClient
 	defaultSerializerId int32
+	remote              *Remote
 }
 
 func (state *endpointWriter) initialize() {
@@ -39,41 +41,56 @@ func (state *endpointWriter) initialize() {
 }
 
 func (state *endpointWriter) initializeInternal() error {
-	plog.Info("Started EndpointWriter", log.String("address", state.address))
-	plog.Info("EndpointWriter connecting", log.String("address", state.address))
-	conn, err := grpc.Dial(state.address, state.config.dialOptions...)
+	plog.Info("Started EndpointWriter. connecting", log.String("address", state.address))
+	conn, err := grpc.Dial(state.address, state.config.DialOptions...)
 	if err != nil {
+		plog.Info("EndpointWriter connect failed", log.String("address", state.address), log.Error(err))
 		return err
 	}
 	state.conn = conn
 	c := NewRemotingClient(conn)
 	resp, err := c.Connect(context.Background(), &ConnectRequest{})
 	if err != nil {
+		plog.Info("EndpointWriter connect failed", log.String("address", state.address), log.Error(err))
 		return err
 	}
 	state.defaultSerializerId = resp.DefaultSerializerId
 
 	//	log.Printf("Getting stream from address %v", state.address)
-	stream, err := c.Receive(context.Background(), state.config.callOptions...)
+	stream, err := c.Receive(context.Background(), state.config.CallOptions...)
 	if err != nil {
+		plog.Info("EndpointWriter connect failed", log.String("address", state.address), log.Error(err))
 		return err
 	}
 	go func() {
-		_, err := stream.Recv()
-		if err != nil {
-			plog.Info("EndpointWriter lost connection to address", log.String("address", state.address), log.Error(err))
+		for {
+			_, err := stream.Recv()
+			if err == io.EOF {
+				plog.Debug("EndpointWriter stream completed", log.String("address", state.address))
+				break
+			} else if err != nil {
+				plog.Error("EndpointWriter lost connection", log.String("address", state.address), log.Error(err))
 
-			// notify that the endpoint terminated
-			terminated := &EndpointTerminatedEvent{
-				Address: state.address,
+				// notify that the endpoint terminated
+				terminated := &EndpointTerminatedEvent{
+					Address: state.address,
+				}
+				state.remote.actorSystem.EventStream.Publish(terminated)
+				break
+			} else {
+				plog.Info("EndpointWriter remote disconnected", log.String("address", state.address))
+				// notify that the endpoint terminated
+				terminated := &EndpointTerminatedEvent{
+					Address: state.address,
+				}
+				state.remote.actorSystem.EventStream.Publish(terminated)
 			}
-			eventstream.Publish(terminated)
 		}
 	}()
 
 	plog.Info("EndpointWriter connected", log.String("address", state.address))
 	connected := &EndpointConnectedEvent{Address: state.address}
-	eventstream.Publish(connected)
+	state.remote.actorSystem.EventStream.Publish(connected)
 	state.stream = stream
 	return nil
 }
@@ -159,9 +176,19 @@ func (state *endpointWriter) Receive(ctx actor.Context) {
 	case *actor.Started:
 		state.initialize()
 	case *actor.Stopped:
-		state.conn.Close()
+		if state.stream != nil {
+			err := state.stream.CloseSend()
+			if err != nil {
+				plog.Error("EndpointWriter error when closing the stream", log.Error(err))
+			}
+		}
 	case *actor.Restarting:
-		state.conn.Close()
+		if state.stream != nil {
+			err := state.stream.CloseSend()
+			if err != nil {
+				plog.Error("EndpointWriter error when closing the stream", log.Error(err))
+			}
+		}
 	case *EndpointTerminatedEvent:
 		ctx.Stop(ctx.Self())
 	case []interface{}:

@@ -227,3 +227,8 @@ FakesAssemblies/
 
 # MacOS
 .DS_Store
+
+# go.sum of examples
+_examples/**/go.sum
+.vscode/
+

@@ -1,7 +1,7 @@
 package remote
 
 import (
-	"time"
+	io "io"
 
 	"github.com/AsynkronIT/protoactor-go/actor"
 	"github.com/AsynkronIT/protoactor-go/log"
@@ -12,6 +12,13 @@ import (
 
 type endpointReader struct {
 	suspended bool
+	remote    *Remote
+}
+
+func newEndpointReader(r *Remote) *endpointReader {
+	return &endpointReader{
+		remote: r,
+	}
 }
 
 func (s *endpointReader) Connect(ctx context.Context, req *ConnectRequest) (*ConnectResponse, error) {
@@ -23,17 +30,39 @@ func (s *endpointReader) Connect(ctx context.Context, req *ConnectRequest) (*Con
 }
 
 func (s *endpointReader) Receive(stream Remoting_ReceiveServer) error {
+	disconnectChan := make(chan bool, 1)
+	s.remote.edpManager.endpointReaderConnections.Store(stream, disconnectChan)
+	defer func() {
+		close(disconnectChan)
+	}()
+	go func() {
+		// endpointManager sends true
+		// endpointReader sends false
+		if <-disconnectChan {
+			plog.Debug("EndpointReader is telling to remote that it's leaving")
+			err := stream.SendMsg(&Unit{})
+			if err != nil {
+				plog.Error("EndpointReader failed to send disconnection message", log.Error(err))
+			}
+		} else {
+			s.remote.edpManager.endpointReaderConnections.Delete(stream)
+			plog.Debug("EndpointReader removed active endpoint from endpointManager")
+		}
+	}()
+
 	targets := make([]*actor.PID, 100)
 	for {
-		if s.suspended {
-			time.Sleep(time.Millisecond * 500)
-			continue
-		}
-
 		batch, err := stream.Recv()
-		if err != nil {
-			plog.Debug("EndpointReader failed to read", log.Error(err))
+		if err == io.EOF {
+			plog.Debug("EndpointReader stream closed")
+			disconnectChan <- false
+			return nil
+		} else if err != nil {
+			plog.Info("EndpointReader failed to read", log.Error(err))
 			return err
+		} else if s.suspended {
+			// We read all messages ignoring them to gracefully end the request
+			continue
 		}
 
 		// only grow pid lookup if needed
@@ -42,7 +71,7 @@ func (s *endpointReader) Receive(stream Remoting_ReceiveServer) error {
 		}
 
 		for i := 0; i < len(batch.TargetNames); i++ {
-			targets[i] = actor.NewLocalPID(batch.TargetNames[i])
+			targets[i] = s.remote.actorSystem.NewLocalPID(batch.TargetNames[i])
 		}
 
 		for _, envelope := range batch.Envelopes {
@@ -62,9 +91,9 @@ func (s *endpointReader) Receive(stream Remoting_ReceiveServer) error {
 					Watchee: msg.Who,
 					Watcher: pid,
 				}
-				endpointManager.remoteTerminate(rt)
+				s.remote.edpManager.remoteTerminate(rt)
 			case actor.SystemMessage:
-				ref, _ := actor.ProcessRegistry.GetLocal(pid.Id)
+				ref, _ := s.remote.actorSystem.ProcessRegistry.GetLocal(pid.Id)
 				ref.SendSystemMessage(pid, msg)
 			default:
 				var header map[string]string
@@ -76,7 +105,7 @@ func (s *endpointReader) Receive(stream Remoting_ReceiveServer) error {
 					Message: message,
 					Sender:  sender,
 				}
-				rootContext.Send(pid, localEnvelope)
+				s.remote.actorSystem.Root.Send(pid, localEnvelope)
 			}
 		}
 	}
@@ -84,4 +113,7 @@ func (s *endpointReader) Receive(stream Remoting_ReceiveServer) error {
 
 func (s *endpointReader) suspend(toSuspend bool) {
 	s.suspended = toSuspend
+	if toSuspend {
+		plog.Debug("Suspended EndpointReader")
+	}
 }
